@@ -28,11 +28,72 @@ export default {
       return json({ ok: true, service: "ni-mail" });
     }
 
-    if (!assertAuthorized(request, env)) {
+    const isAdminMailsRequest = request.method === "GET" && url.pathname === "/admin/mails";
+    if (isAdminMailsRequest) {
+      const adminAuth = request.headers.get("x-admin-auth");
+      if (!env.AUTH_KEY || adminAuth !== env.AUTH_KEY) {
+        return unauthorized();
+      }
+    } else if (!assertAuthorized(request, env)) {
       return unauthorized();
     }
 
     try {
+      if (isAdminMailsRequest) {
+        const address = url.searchParams.get("address");
+        if (!address?.trim()) return badRequest("address is required");
+
+        const mailbox = normalizeEmail(address);
+        if (!isAllowedMailbox(mailbox, env)) {
+          return badRequest(`mailbox domain is not allowed: ${mailbox}`);
+        }
+
+        const requestedLimit = Number(url.searchParams.get("limit") ?? 50);
+        const limit = Number.isInteger(requestedLimit)
+          ? Math.min(200, Math.max(1, requestedLimit))
+          : 50;
+        const listingResponse = await proxyToMailbox(
+          env,
+          mailbox,
+          `/internal/emails?folder=all&limit=${limit}&sortDirection=DESC`,
+        );
+        if (!listingResponse.ok) return listingResponse;
+
+        const listing = await listingResponse.json() as {
+          items?: Array<{ id: string }>;
+        };
+        const emails = await Promise.all(
+          (listing.items ?? []).map(async ({ id }) => {
+            const response = await proxyToMailbox(
+              env,
+              mailbox,
+              `/internal/emails/${encodeURIComponent(id)}`,
+            );
+            if (!response.ok) return null;
+            return await response.json() as {
+              id: string;
+              subject?: string;
+              from?: string;
+              date?: string;
+              text?: string;
+              html?: string;
+              snippet?: string;
+            };
+          }),
+        );
+
+        return json({
+          items: emails.filter((email): email is NonNullable<typeof email> => email !== null).map((email) => ({
+            id: email.id,
+            subject: email.subject || "",
+            sender: email.from || "",
+            date: email.date || "",
+            body: email.text || email.html || "",
+            snippet: email.snippet || "",
+          })),
+        });
+      }
+
       if (request.method === "GET" && url.pathname === "/latest") {
         const mailbox = resolveMailbox(request, env);
         if (!mailbox) return badRequest("mailbox is required");
