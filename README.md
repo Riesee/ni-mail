@@ -187,3 +187,4 @@ Settings → Variables and Secrets 新增 `AUTH_KEY` 時，類型請選 **Secret
 ## License
 
 Apache License 2.0
+Deployment retry after enabling Cloudflare R2.
